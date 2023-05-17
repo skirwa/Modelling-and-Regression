@@ -1,0 +1,716 @@
+---
+title: "STA 631 Portfolio (Fitting and Evaluating Regression and Classification Models)"
+author: "Sharon Kirwa"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  html_document: default
+---
+
+# Course Objectives
+
+I believe that I successfully achieved the following course objectives:
+
+**1. Describe probability as a foundation of statistical modeling, including inference and maximum likelihood estimation.**
+
+Probability is used in statistical modeling to explain the behavior of random variables. With the use of probability distributions such as normal distribution and binomial distribution, we are able to model the distribution of variables in a given dataset. Also, we can make inferences (draw conclusions) from data or conduct hypotheses testing. In hypothesis testing, probability is used to determine whether we reject or fail to reject the null hypothesis. Maximum likelihood estimation is used to estimate the parameters of a model. It entails finding parameter values that maximize the likelihood (or probability) of observing the data given the model. Maximum likelihood is important in analyzing categorical data. My understanding of maximum likelihood improved by fitting a multivariate logistic regression model and reading chapter 4 of the `Introduction to Statistical Learning` book.
+
+**2. Determine and apply the appropriate generalized linear model for a specific data context**
+
+I achieved this objective by fitting appropriate models (both regression and categorical), as will be shown below.
+
+**3. Conduct model selection for a set of candidate models**
+
+I achieved this objective by fitting appropriate models, as well as selecting the `best model`, as will be shown below.
+
+**4. Communicate the results of statistical models to a general audience**
+
+I met this objective by providing an interpretation of the best model for each mini-project, as it will be demonstrated below.
+
+**5. Use programming software (i.e., R) to fit and assess statistical models**
+
+I have used R programming language to fit and assess models and also to generate this portfolio that showcases my accomplishments for this course.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(tidymodels)
+library(GGally)
+library(MASS)
+library(corrr)
+library(nnet)
+library(vip)
+library(glmnet)
+library(ranger)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(car)
+library(lmtest)
+library(readr)
+library(dplyr)
+library(rgl)
+```
+
+## Information About the Dataset
+
+For the mini-projects, the dataset that I am using is the seasons_goal dataset obtained from tidyverse. The data is extracted from HockeyReference.com. The variables of interest are:
+
+1. Position: the player's position which is either C-Center, D-Defense, RW-Right Wing, LW-Left Wing.
+2. Hand: This is the dominant hand which is either left or right.
+3. Player Name.
+4. Total_goals: Total goals scored by the player in the career.
+5. Age: The age of the player.
+6. Goals: Goals scored in the season.
+7. Assists: Number of assists in the season.
+8. Points: Number of points in the season.
+9. Plus_minus: Team points minus opponents points scored while on ice.
+10. Penalty_min: Penalty minutes in the season.
+11. Goals_even: Goals scored while even strength in a season.
+12. Goals_power_play: Goals scored on powerplay in a season.
+13. Goals_short_handed: Goals short handed in a season.
+14. Goals_game_winner: Goals that were game winner in a season.
+
+
+```{r}
+# Load data
+goals <- readr::read_csv("season_goals.csv")
+```
+
+# Mini-Project One - Regression Model
+
+**Research Question:** What factors have a significant impact on the total number of goals that a professional hockey player scores throughout his career?
+
+**Target Variable:** Total number of goals scored by each hockey player.
+
+**Independent variables:** The quantitative variables listed above are of interest.
+
+**Approach:** This is a regression problem because the response variable is quantitative. Thus, I would use multi linear regression.
+
+## Data Preprocessing
+
+### Objective Two 
+
+In this step, I achieved the second objective, `determining the appropriate generalized linear model for a specific data context`. I explored the target variable `Total_goals` in relation to the predictor variables, with the aim of identifying the appropriate model to use for the task at hand. I then applied the appropriate model in the modeling stage.
+
+The data consisted of the statistics of each player for every season and for the different teams that they have played for. In this step I preprocessed the data to obtain the statistics/summary of each player. 
+
+```{r}
+# use group_by() and summarise() functions to obtain the desired dataset
+players <- goals %>%
+  dplyr::select(player, age, goals, assists, points, plus_minus, 
+         penalty_min, goals_even, goals_power_play, 
+         goals_short_handed, goals_game_winner) %>%
+  group_by(player) %>% 
+  summarise(Age = max(age, na.rm = TRUE),
+            Total_goals = sum(goals, na.rm = TRUE),
+            Assists = sum(assists, na.rm = TRUE),
+            Points = sum(points, na.rm = TRUE),
+            Plus_minus = sum(plus_minus, na.rm = TRUE),
+            Penalty_min = sum(penalty_min, na.rm = TRUE),
+            Goals_even = sum(goals_even, na.rm = TRUE),
+            Goals_power_play = sum(goals_power_play, na.rm = TRUE),
+            Goals_short_handed = sum(goals_short_handed, na.rm = TRUE),
+            Goals_game_winner = sum(goals_game_winner, na.rm = TRUE))
+
+```
+
+
+```{r Histogram plot}
+# Plot of a histogram to check for skewness
+players %>% ggplot(mapping = aes(x = Total_goals)) +
+  geom_histogram(fill = "cornflowerblue", 
+                 color = "white", 
+                 bins = 20)
+```
+
+The target variable, total goals, is skewed to the left. This makes sense because it is expected for most players to have the total goals they've scored in their career to be closer to range between 0 and 800. Also, the plot tells us that the total goals for the players are not normally distributed. 
+
+### Missing values
+
+```{r}
+sum(is.na(players$Total_goals))
+```
+
+There are no missing values in the target variable. The total number of goals scored by each hockey player is available.
+
+### Handing outliers
+
+```{r}
+# Boxplot of the response variable
+boxplot(players$Total_goals)
+```
+
+We see that there are outliers. Probably there are players who scored much higher goals in their career compared to other players, which is to be expected. Since the variables have different ranges and there are outliers in the dataset, it is important to transform them to a similar scale (between 0 and 1).
+
+```{r}
+quartiles <- quantile(players$Total_goals, probs=c(.25, .75), na.rm = FALSE)
+IQR <- IQR(players$Total_goals)
+ 
+Lower <- quartiles[1] - 1.5*IQR
+Upper <- quartiles[2] + 1.5*IQR 
+ 
+players_handled <- subset(players, players$Total_goals > Lower & players$Total_goals < Upper)
+data_to_scale <- subset(players_handled, select = -c(player))
+players_scaled <- as.data.frame(apply(data_to_scale, 2, function(x) (x - min(x)) / (max(x) - min(x))))
+```
+
+24 observations identified as outliers were removed from the dataset. However, in the boxplot below, we see that there is still an issue with outliers.
+
+```{r}
+boxplot(players_scaled$Total_goals)
+```
+
+### Check for linearity
+
+The relationship between the dependent variable and the independent variables should be linear. This means that the effect of the independent variable on the dependent variable should be constant across all levels of the independent variable.
+
+```{r}
+# Plot a scatterplot to determine if a linear relationship exists between the target variable and at least one of the predictor variables
+players_scaled %>% 
+  ggplot(mapping = aes(y=Total_goals, x=Goals_even)) +
+  geom_point(colour = 'orange', size = 2) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Total goals scored by Hockey Players"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank()
+    )
+
+```
+
+
+```{r}
+# Plot a scatterplot to determine if a linear relationship exists between the target variable and at least one of the predictor variables
+players_scaled %>% 
+  ggplot(mapping = aes(y=Total_goals, x=Points)) +
+  geom_point(colour = 'pink', size = 2) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Total goals scored by Hockey Players"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank()
+    )
+```
+
+In the plots above, we see that there's a linear relationship between the the target variable and at least some of the predictor variables.
+
+### Collinearity
+
+```{r, warning=FALSE}
+players_scaled %>% 
+  ggpairs()
+```
+
+```{r}
+cor_goals <- players_scaled %>%
+  correlate()
+
+cor_goals
+```
+
+We see that there is a very high correlation between `Total_goals` and `Goals_even` (0.92) There is also a high correlation between `Total_goals` and the following variables: `Points` (0.76), `Goals_power_play` (0.81) and `Goals_game_winner` (0.72).
+
+There is also high correlation between the predictor variables, which is not desirable. `Assist` and `Points` are highly correlated (0.95). Only one of the two variables will be used in downstream analyses because adding more than one of these variables to the model would not add much value.
+
+## Modeling
+
+### Objective Two
+
+I achieved the second objective, `applying the appropriate generalized linear model for a specific data context`, in the modeling step below. 
+
+```{r}
+# Split data into training and test sets (80% for training, 20% for testing)
+set.seed(123)
+train_indices <- sample(1:nrow(players_scaled), round(0.8 * nrow(players_scaled)))
+train_rm <- players_scaled[train_indices, ]
+test_rm <- players_scaled[-train_indices, ]
+```
+
+## Fitting the First Model
+
+We first fit the model with all the variables, excluding the variable that with collinearity issue.
+
+```{r}
+data_to_fit <- subset(train_rm, select = -c(Assists))
+
+model_r1 <- lm(Total_goals ~., data = data_to_fit)
+tidy(model_r1)
+```
+
+**Estimated equation for this Model**
+
+$$
+\hat{y} = -0.28 - 0.004\times Age + 0.05 \times Points - 0.03 \times Plus\_minus + 0.02 \times Penalty\_min + 0.87 \times Goals\_even + 0.43 \times Goals\_power\_play + 0.11 \times Goals\_short\_handed + 0.09 \times Goals\_game\_winner
+$$
+Based on the coefficient estimates above, we see how the total goals scored by a player increases or decreases for every unit change of the predictor variables. For instance, for every one unit change in goals_even, the number of goals scored by a player increases by 0.87.
+
+### Assessing the Accuracy of the Model
+
+**Is at least one of the predictors useful in predicting Total_goals?**
+
+`Null hypothesis` - H0 : β1 = β2 = ··· = βp = 0
+
+`Alternative hypothesis` - Ha : at least one βj is non-zero.
+
+This hypothesis test is performed by computing the F-statistic.
+
+```{r}
+summary(model_r1)
+```
+
+The `F-statistic` value is closer to `1` if there is little to no relationship between the dependent and independent variables. In this case, the `F-statistic` is `969.2`, which is much greater than `1`. There is compelling evidence that a relationship exists and, thus, we reject the null hypothesis.
+
+The `p-value` associated with the `F-statistic` is close to zero. Thus, there is evidence that at least one of the independent variables has an effect on the total goals scored by each hockey player.
+
+**Do all the predictors help to explain the Total_goals, or is only a subset of the predictors useful?**
+
+Based on the p-values, we see that only four variables, `Goals_even`, `Goals_power_play`, `Goals_short_handed`, and `Goals_game_winner` are useful in predicting `Total goals`. 
+
+```{r}
+glance(model_r1)
+```
+
+**How well does the model fit the data?**
+
+The R-Squared value is 0.9771. The r-squared value is quite high, which indicates that the first model with all the variables is a good fit for the data.
+
+**Test for multicollinearity**
+
+Below, we use the Variance Inflation Factor (VIF) and the Durbin-Watson test to check for multicollinearity.
+
+```{r}
+vif(model_r1)
+```
+
+Multicollinearity exists if the VIF value is above 5 or 10. In this case, there is absence of multicollinearity because all the VIF values of the variables in the model are below 5.
+
+```{r}
+# Test for autocorrelation using Durbin-Watson test
+dwtest(model_r1)
+```
+
+Using the Durbin-Watson test on the residuals of the model, we see that the p-value is more than 5% significance level. Therefore, there is evidence that there is no autocorrelation in the residuals, they are independent of each other. The assumption of independent residuals is met in this model.
+
+
+```{r}
+aug_model1 <- augment(model_r1)
+```
+
+```{r}
+ggplot(data = aug_model1, mapping = aes(x= .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+```
+
+Despite the fact that there is an outlier, we see that the residuals are independent and there is no clear pattern. Therefore, this tells us that the first model is a good fit for the given data. 
+
+## Fitting the Second Model
+
+The variables with high p-values are removed in the second model.
+
+```{r}
+data_to_fit <- subset(train_rm, select = c(Total_goals, Goals_even, Goals_power_play, Goals_short_handed, Goals_game_winner))
+
+model_r2 <- lm(Total_goals ~., data = data_to_fit)
+tidy(model_r2)
+```
+
+**Estimated equation for this Model**
+
+$$
+\hat{y} = -0.29 + 0.9\times Goals\_even + 0.45 \times Goals\_power\_play + 0.12 \times Goals\_short\_handed + 0.07 \times Goals\_game\_winner
+$$
+
+Based on the coefficient estimates above, we see how the total goals scored by a player increases or decreases for every unit change of the predictor variables. For instance, for every one unit change in goals_even, the number of goals scored by a player increases by 0.9.
+
+```{r}
+glance(model_r2)
+```
+
+### Assessing the Accuracy of the Model
+
+**Is at least one of the predictors useful in predicting Total_goals?**
+
+`Null hypothesis` - H0 : β1 = β2 = ··· = βp = 0
+
+`Alternative hypothesis` - Ha : at least one βj is non-zero.
+
+This hypothesis test is performed by computing the F-statistic.
+
+```{r}
+summary(model_r2)
+```
+
+The `F-statistic` in this case is `1914`, which is much greater than `1`. It's also greater than the F-statistic for the first model. Thus, there is compelling evidence that a relationship exists and, thus, we reject the null hypothesis.
+
+The `p-value` associated with the F-statistic is close to zero. Thus, there is evidence that at least one of the independent variables has an effect on the target variable.
+
+**Do all the predictors help to explain the Total_goals, or is only a subset of the predictors useful?**
+
+Based on the p-values of the independent variables, we see that all the four variables in the model `Goals_even`, `Goals_power_play`, `Goals_short_handed`, and `Goals_game_winner` are useful in predicting `Total goals`. 
+
+**How well does the model fit the data?**
+
+The `R-Squared` value is `0.9764`. The R-Squared value is quite high, which indicates that `model1` with all the variables is a good fit for the data.
+
+**Test for multicollinearity**
+
+Below, we use the Variance Inflation Factor (VIF) and the Durbin-Watson test to check for multicollinearity.
+
+```{r}
+vif(model_r2)
+```
+
+Multicollinearity exists if the VIF value is above 5 or 10. In this case, there is absence of multicollinearity because all the VIF values of the variables in the model are below 5.
+
+
+```{r}
+aug_model2 <- augment(model_r2)
+```
+
+```{r}
+ggplot(data = aug_model2, mapping = aes(x= .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "blue") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+```
+
+Despite the fact that there is an outlier, we see that the residuals are independent and there is no clear pattern. Therefore, this tells us that these first model is good fit fot the given data. In essence, `Goals_even`, `Goals_power_play`, `Goals_short_handed`, and `Goals_game_winner` have a significant impact on the `Total goals` scored by a hockey player.
+
+
+```{r}
+# Use the predict() function to make predictions
+predictions <- predict(model_r2, test_rm)
+```
+
+```{r}
+# Compute the RMSE
+rmse <- sqrt(mean((test_rm$Total_goals - predictions)^2))
+
+# Compute the R-squared
+r_squared <- 1 - sum((test_rm$Total_goals - predictions)^2) / sum((test_rm$Total_goals - mean(test_rm$Total_goals))^2)
+
+# Print the RMSE and R-squared
+cat("RMSE: ", rmse, "\n")
+cat("R-squared: ", r_squared, "\n")
+```
+
+### Objective 3
+
+I met the third objective, `conduct model selection for a set of candidate models`, by assessing the goodness of fit of the models above and selecting the best model. Model selection is described in the conclusion below. 
+
+### Objective 4
+
+I achieved objective 4, `communicate the results of statistical models to a general audience`, by providing an interpretation of the model selected as demonstrated in the conclusion below.
+
+### Conclusion
+
+After analyzing the data using the final model, we can conclude that it is a good fit based on the low root mean squared error `RMSE` (`0.0141`) and the high `R-squared` value (0.9959). These metrics provide compelling evidence that the model explains a large portion of the variance in the data. Specifically, we found that the predictor variables `Goals_even`, `Goals_power_play`, `Goals_short_handed`, and `Goals_game_winner` have a significant impact on the response variable `Total_goals` scored by a hockey player. This suggests that these predictor variables are important in predicting the total number of goals scored, and can be used to develop strategies for improving a player's performance.
+
+
+# Mini-Project Two - Classification Models
+
+**Research Question:** What factors have a significant impact on the position that a professional hockey player plays?
+
+**Target Variable:** Positions played by the hockey players. The positions include C-Center, D-Defense RW-Right Wing, and LW-Left Wing.
+
+**Independent variables:** The variables listed above are of interest.
+
+**Approach:** This is a classification problem since the response variable is categorical. Thus, I will employ different classification techniques.
+
+```{r}
+# Drop rows with missing values in the position variable
+h_players <- goals %>% 
+  dplyr::select(position, hand, player, age, goals, assists, points, 
+                plus_minus, penalty_min, goals_even, goals_power_play, 
+                goals_short_handed, goals_game_winner) %>% 
+  drop_na(position)
+
+```
+
+## Data Preprocessing and Exploration
+
+### Objective Two 
+
+I achieved the second objective, `determining the appropriate generalized linear model for a specific data context`, in the data preprocessing stage. I explored the target variable `position` in relation to the predictor variables, with the aim of identifying the appropriate model to use for the task at hand. I then applied the appropriate model in the modeling stage.
+
+### Relationship Between Variables
+
+```{r}
+# Plot a scatterplot to explore the relationship between variables
+h_players %>% 
+  ggplot(mapping = aes(y=goals, x=player, color=position)) +
+  geom_point(size = 2) +
+  labs(
+    title = "Total goals of Hockey Players and Position Played"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank()
+    )
+```
+
+There is no discernible relationship between the variables plotted above.
+
+### Outliers
+
+```{r}
+h_players %>% ggplot(aes(x=position, y=goals))+
+  geom_boxplot()
+```
+
+We see that our response variable has outliers. Outliers are handled in the code below.
+
+```{r}
+quartiles2 <- quantile(h_players$goals, probs=c(.25, .75), na.rm = FALSE)
+IQR <- IQR(h_players$goals)
+ 
+Lower <- quartiles2[1] - 1.5*IQR
+Upper <- quartiles2[2] + 1.5*IQR 
+ 
+h_players_handled <- subset(h_players, h_players$goals > Lower & h_players$goals < Upper)
+```
+
+```{r}
+h_players_handled %>% ggplot(aes(x=position, y=goals))+
+  geom_boxplot()
+
+```
+
+We see that most of the outliers have been removed. 
+
+### Multicolinearity
+
+```{r}
+cor_players <- h_players_handled %>%
+  correlate()
+
+cor_players
+```
+
+There's an issue of multicolinearity in the dataset. The following variables are highly correlated: `goals` and `points`, `goals` and `goals_even`, `goals` and `goals_game_winner`, `goals` and `goals_power_play`, `points` and `assists`, `points` and `goals_even`. Since all these mentioned variables are highly correlated with the variable `goals`, I will only retain the `goals` variable.
+
+```{r}
+h_goals <- h_players_handled %>% 
+  dplyr::select(position, hand, age, goals, plus_minus, penalty_min,goals_short_handed)
+```
+
+```{r}
+cor_hgoals <- h_goals %>%
+  correlate()
+
+cor_hgoals
+```
+
+We see that there's no longer an issue with high correlation amongst the predictor variables.
+
+## Modeling
+
+## Fitting the First Classification Model - Multivariate Logistic Regression
+
+```{r}
+# Split the data into training and testing datasets
+set.seed(123)
+splits <- initial_split(h_goals, strata = position)
+
+train_mlr <- training(splits)
+test_mlr  <- testing(splits)
+
+```
+
+```{r}
+# Fit the first model with all the variables in the train set
+model_mlr <- multinom(position ~ ., data = train_mlr)
+summary(model_mlr)
+```
+
+```{r}
+AIC(model_mlr)
+BIC(model_mlr)
+```
+
+```{r}
+predictions2 <- predict(model_mlr, newdata = test_mlr , type = "class")
+```
+
+```{r}
+actual_classes <- test_mlr$position
+
+# Calculate the accuracy of the predictions
+accuracy <- mean(predictions2 == actual_classes, na.rm = TRUE)
+
+accuracy
+```
+We will compare the metrics of the first model with the second model to determine which model fits the data best.
+
+## Fitting the Second Classification Model - Multivariate Logistic Regression
+
+```{r}
+model_mlr2 <- multinom(position ~ hand, data = train_mlr)
+summary(model_mlr2)
+```
+
+```{r}
+AIC(model_mlr2)
+BIC(model_mlr2)
+```
+
+```{r}
+predictions3 <- predict(model_mlr2, newdata = test_mlr , type = "class")
+```
+
+```{r}
+actual_classes <- test_mlr$position
+
+# Calculate the accuracy of the predictions
+accuracy <- mean(predictions3 == actual_classes, na.rm = TRUE)
+
+accuracy
+```
+
+## Objective 3
+
+I met the third objective, `conduct model selection for a set of candidate models`, by assessing the goodness of fit of the models above and selecting the best model. Model selection is described below. 
+
+### Assessing the goodness of fit of the two multivariate logistic models.
+
+**Residual Deviance, AIC, and BIC Values**
+
+The model with lower residual deviance, AIC (Akaike Information Criterion) and BIC (Bayesian Information Criterion) values is considered to be a better fit. The first model `model_mlr1` had a residual deviance of 4740.273, an AIC value of 4782.273, and a BIC value of 4901.903. The second model `model_mlr2` had a residual deviance of 5203.624, an AIC value of 5215.624 and a BIC value of 5250.11. Therefore, based on these values, the first model consisting of the variables `hand`, `age`, `goals`, `plus_minus`, `penalty_min` and `goals_short_handed` have a significant impact on the hockey player's position in the game.
+
+**Accuracy**
+
+The first model had an accuracy of `0.4796748`, while the second model had an accuracy of `0.4560724`. The first model had a higher accuracy, and, therefore, it is a better fit for the model.
+
+**Conclusion**
+
+Based on the results of our analysis, we can infer that the variables `hand`, `age`, `goals`, `plus_minus`, `penalty_min` and `goals_short_handed` are statistically significant predictors of a hockey player's position in a hockey game. Therefore, we can conclude that these variables have a significant impact on a hockey player's position. However, it is important to note that other factors beyond these variables may also influence a player's position in a game. 
+
+## Fitting the Third Classification Model - Decision Tree
+
+```{r}
+# Build the decision tree model
+model_tree1 <- rpart(position ~ hand, data = train_mlr, method = "class")
+```
+
+```{r}
+# Make predictions on the test data
+predictions4 <- predict(model_tree1, newdata = test_mlr, type = "class")
+```
+
+```{r}
+# Evaluate the accuracy of the model
+accuracy <- mean(predictions4 == test_mlr$position, na.rm = TRUE)
+
+# Print the accuracy
+cat("Accuracy:", accuracy, "\n")
+```
+
+```{r}
+# Calculate the misclassification rate
+misclassification_rate <- sum(predictions4 != test_mlr$position) / nrow(test_mlr)
+
+# Print the misclassification rate
+cat("Misclassification rate:", misclassification_rate, "\n")
+```
+
+```{r}
+# Create a confusion matrix
+conf_matrix <- confusionMatrix(predictions4, as.factor(test_mlr$position))
+
+# Print the confusion matrix
+conf_matrix$table
+```
+
+```{r}
+# Plot the decision tree
+rpart.plot(model_tree1)
+
+```
+
+## Fitting the Fourth Classification Model - Decision Tree
+
+```{r}
+# Build the decision tree model
+model_tree2 <- rpart(position ~ ., data = train_mlr, method = "class")
+```
+
+```{r}
+# Make predictions on the test data
+predictions5 <- predict(model_tree2, newdata = test_mlr, type = "class")
+```
+
+```{r}
+# Evaluate the accuracy of the model
+accuracy <- mean(predictions5 == test_mlr$position, na.rm = TRUE)
+
+# Print the accuracy
+cat("Accuracy:", accuracy, "\n")
+```
+
+```{r}
+# Calculate the misclassification rate
+misclassification_rate <- sum(predictions5 != test_mlr$position) / nrow(test_mlr)
+
+# Print the misclassification rate
+cat("Misclassification rate:", misclassification_rate, "\n")
+```
+
+```{r}
+# Create a confusion matrix
+conf_matrix <- confusionMatrix(predictions5, as.factor(test_mlr$position))
+
+# Print the confusion matrix
+conf_matrix$table
+```
+
+```{r}
+# Plot the decision tree
+rpart.plot(model_tree2)
+
+```
+
+### Objective 3
+
+I met the third objective, `conduct model selection for a set of candidate models`, by assessing the goodness of fit of the models above and selecting the best model. Model selection is described below. 
+
+### Objective 4
+
+I achieved objective 4, `communicate the results of statistical models to a general audience` by providing an interpretation of the model selected, as demonstrated in the conclusion below.
+
+### Assessing the goodness of fit of the two decision tree models.
+
+**Confusion Matrix**
+
+The first decision tree model, `model_tree1`, did not predict the `D` and `LW` positions. I'm not sure why that was the case. For `C` and `RW` positions, we see that they were highly misclassified. For instance, for the C position, only 193 observations were classified correctly out of 442.
+For the second decision tree model, `model_tree2`, there were no predictions for the `D` position. There is also a high case of misclassification in the second model. For the position `C`, only 193 observations were classified correctly out of 442.
+
+**Accuracy and Misclassification Rate**
+
+For the first model, the accuracy was 0.4560724 and the misclassification rate was 0.5439276.
+For the second model, the accuracy was 0.4625323 and the misclassification rate was 0.5374677.
+These values are to be expected because based on the confusion matrices, the two models did not perform well in classifying the different positions.
+
+**Conclusion**
+
+Based on the above analysis, the results indicate that a decision tree model with `hand`, `age`, `goals`, `plus_minus`, `penalty_min`, and `goals_short_handed` is a statistically significant predictor of a hockey player's position. However, the model's high misclassification rate suggests that it may not be the best fit for the data. Therefore, further analysis and evaluation of alternative models should be considered to identify a more accurate and reliable approach for predicting a hockey player's position.
+
+
+# Reflection on my Growth.
+
+Throughout this course, I have gained a solid foundation in statistical modeling and regression. I now have a comprehensive understanding of fitting regression and classification models, and how to evaluate their goodness of fit using appropriate metrics. However, I am aware that selecting the most appropriate model for the data is still an area of improvement for me. In addition to modeling, I have also learned about the importance of communicating technical findings to a non-technical audience. Although I have some experience in this area, I recognize the need to continually improve my communication skills.
+
+Moreover, the course covered several topics such as `resampling`, `cross-validation`, and `model selection`, which have given me a better understanding of these concepts. However, I acknowledge that there is a need for me to practice implementing these concepts effectively in fitting accurate and reliable models. Overall, I have learned a lot in this course, and I am excited to continue expanding my knowledge and skills in statistical modeling and regression.
+
+
+# Reference
+
+Huang, J. Z. (2014). An Introduction to Statistical Learning: With Applications in R By Gareth James, Trevor Hastie, Robert Tibshirani, Daniela Witten: Publisher: Springer, 2013. ISBN 978-1-4614-7137-0.
